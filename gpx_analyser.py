@@ -22,7 +22,7 @@ class gpxAnalyserClass:
 		'cad': "steps/min",
 		'dist': "m",
 		'time_acc': "min",
-		'speed': "min/Km"
+		'pace': "min/Km"
 	}
 
 	names: dict = {
@@ -34,7 +34,7 @@ class gpxAnalyserClass:
 		'cad': "Cadence",
 		'dist': "Distance",
 		'time_acc': "Time",
-		'speed': "Velocity"
+		'pace': "Pace"
 	}
 
 	def __init__(self, gpx_filename):
@@ -45,10 +45,13 @@ class gpxAnalyserClass:
 		self.df['cad'] = self.df['cad'] + 100
 		self.df['dist'] = self.get_distances()
 		self.df['time_acc'] = self.get_times()
-		self.df['speed'] = self.get_speeds()
+		self.df['pace'] = self.get_speeds()
 		for i in range(len(self.df)):
-			if self.df['speed'][i] > 20:
-				self.df.loc[i, 'speed'] = 20
+			if self.df['pace'][i] > 20:
+				self.df.loc[i, 'pace'] = 20
+		df_numeric = self.df.select_dtypes(include=['number'])
+		self.df_norm = (df_numeric - df_numeric.mean()) / df_numeric.std()
+		self.df_norm['pace'] = -self.df_norm['pace']
 
 	def gpx_to_df(self, gpx_object):
 		lat = []
@@ -121,7 +124,7 @@ class gpxAnalyserClass:
 	def get_gdf(self, crs):
 		return gpd.GeoDataFrame(self.df, geometry=gpd.points_from_xy(self.df.lon, self.df.lat), crs=crs)
 
-	def plot_track_satelite(self, filename=None):
+	def plot_track_satelite(self, filename=None, cmap='viridis', parameter=None):
 		gdf = self.get_gdf(crs="EPSG:4326")
 	
 		x_max = gdf.geometry.x.max()
@@ -137,10 +140,18 @@ class gpxAnalyserClass:
 		gdf = gdf.to_crs(epsg=3857)
 
 		fig, ax = plt.subplots(figsize=(fig_size_x, fig_size_y))
-		ax.plot(gdf.geometry.x, gdf.geometry.y, color='red', markersize=5, alpha=0.7)
+		if parameter is not None:
+			param_values = self.df_norm[parameter]
+			norm = mcolors.Normalize(vmin=min(param_values), vmax=max(param_values))
+			scalar_map = cm.ScalarMappable(norm=norm, cmap=cmap)
+			track_color = [mcolors.to_hex(scalar_map.to_rgba(param_values[i]))
+							for i in range(len(self.df))]
+			ax.scatter(gdf.geometry.x, gdf.geometry.y, color=track_color, s=3.0)
+		else:
+			ax.plot(gdf.geometry.x, gdf.geometry.y, color='r', markersize=5, alpha=0.7)
 
-		#ax.set_xlabel(f"{self.names['lon']}")
-		#ax.set_ylabel(f"{self.names['lat']}")
+		ax.set_yticks([])
+		ax.set_xticks([])
 		ax.set_xlim(gdf.geometry.x.min() - 1e3, gdf.geometry.x.max() + 1e3)
 		ax.set_ylim(gdf.geometry.y.min() - 1e3, gdf.geometry.y.max() + 1e3)
 
@@ -162,66 +173,109 @@ class gpxAnalyserClass:
 		
 		fig, ax = plt.subplots(1, 1, figsize=(7, 5))
 		ax.plot(self.df[x], self.df[parameter], color=color)
-		if parameter == "speed":
+		if parameter == 'pace':
 			ax.set_ylim(self.df[parameter].max(), self.df[parameter].min() - 1)
 		else:
 			ax.set_ylim(self.df[parameter].min() - 1, self.df[parameter].max() + 1)
-		ax.set_title(f"{parameter} vs {x}")
+		ax.set_title(f"{self.names[parameter]} vs {self.names[x]}")
 		if self.units[x] is not None:
-			ax.set_xlabel(f"{x} [{self.units[x]}]")
+			ax.set_xlabel(f"{self.names[x]} [{self.units[x]}]")
 		else:
-			ax.set_xlabel(f"{x}")
+			ax.set_xlabel(f"{self.names[x]}")
 		if self.units[parameter] is not None:
-			ax.set_ylabel(f"{parameter} [{self.units[parameter]}]")
+			ax.set_ylabel(f"{self.names[parameter]} [{self.units[parameter]}]")
 		else:
-			ax.set_ylabel(f"{parameter}")
+			ax.set_ylabel(f"{self.names[parameter]}")
 
 		if filename is not None:
 			fig.savefig(filename)
 		plt.show()
 
-	def plot_different_param(self, *argv, x='dist', fst_param='ele', filename=None, colors=['b', 'r', 'orange', 'cyan', 'magenta']):
+	def __plot_extra_params(self, ax, x, param, focused_param, colors, handles, i):
+		ax2 = ax.twinx()
+		handles.append(
+			ax2.plot(
+				self.df[x],
+				self.df_norm[param],
+				color=colors[(i) % len(colors)],
+				label=self.names[param]
+			)[0]
+			)
+		ax2.set_yticks([])
+
+		if param == focused_param:
+			y_max = int(self.df[param].max())
+			y_min = int(self.df[param].min())
+			if param == 'pace':
+				yticks_labels = [str(int(i)) for i in np.linspace(y_max, y_min, 6)]
+			else:
+				yticks_labels = [str(int(i)) for i in np.linspace(y_min, y_max, 6)]
+			y_max = self.df_norm[param].max()
+			y_min = self.df_norm[param].min()
+			yticks = [i for i in np.linspace(y_min, y_max, 6)]
+			ax2.set_yticks(ticks=yticks, labels=yticks_labels)
+			ax2.set_ylabel(f"{self.names[focused_param]} [{self.units[focused_param]}]")
+
+		return handles
+		
+
+
+
+	def plot_parameters(self, *argv, x='dist', fst_param='ele', focused_param=None, filename=None, cmap='gist_rainbow'):
 
 		if len(argv) == 0:
 			raise Exception("Insert at least two parameters to plot.")
 
-		fig, ax = plt.subplots(1, 1, figsize=(7, 4))
+		if focused_param is None:
+			focused_param = argv[-1]
 
-		fst_param_data = self.df[fst_param]
-		ax.set_xlabel(f"{x} [{self.units[x]}]")
-		y_min = int(fst_param_data.min())
-		y_max = int(fst_param_data.max())
-		yticks = [y_min / y_max, 1]
+		columns = self.df.columns
+		if fst_param not in columns:
+			raise Exception(f"{fst_param} is not a valid parameter. Try with 'ele', 'hr', 'cad' or 'pace'.")
+		elif fst_param in argv:
+			raise Exception(f"'{fst_param}' as fst_param is not a valid because it's already included within the first arguments.")
+		elif focused_param not in columns:
+			raise Exception(f"{focused_param} is not a valid parameter. Try with 'ele', 'hr', 'cad' or 'pace'.")
+		for param in argv:
+			if param not in columns:
+				raise Exception(f"{param} is not a valid parameter. Try with 'ele', 'hr', 'cad' or 'pace'.")
+		if x not in columns:
+			raise Exception("Enter a valid value for x.")
+		if x == 'time':
+			raise Exception("Enter a valid value for x. Maybe try with 'time_acc'.")
+
+		norm = mcolors.Normalize(vmin=0, vmax=1)
+		scalar_map = cm.ScalarMappable(norm=norm, cmap=cmap)
+		color_idxs = np.linspace(0, 1, len(argv) + 1)
+		colors = [scalar_map.to_rgba(i) for i in color_idxs]
+
+		fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+
+		fst_param_norm = self.df_norm[fst_param]
+		ax.set_xlabel(f"{self.names[x]} [{self.units[x]}]")
+		ax.set_ylabel(f"{self.names[fst_param]} [{self.units[fst_param]}]")
+		y_min = int(self.df[fst_param].min())
+		y_max = int(self.df[fst_param].max())
+		yticks = [fst_param_norm.min(), fst_param_norm.max()]
 		yticks_labels = [str(y_min), str(y_max)]
-		handles = [ax.plot(self.df[x], fst_param_data / y_max, color=colors[0], label=fst_param)[0]]
-		ax.axhline(y=y_min / y_max, color='k', linestyle=":", alpha=0.5)
-		ax.axhline(y=1, color='k', linestyle=":", alpha=0.5)
+		ax.fill_between(self.df[x], fst_param_norm.min() * 10, fst_param_norm, color='k', alpha=.5)
+		handles = [ax.plot(self.df[x], fst_param_norm, color='k', alpha=.5, linewidth=1, label=self.names[fst_param])[0]]
+		ax.axhline(y=fst_param_norm.min(), color='k', linestyle=":", alpha=0.5)
+		ax.axhline(y=fst_param_norm.max(), color='k', linestyle=":", alpha=0.5)
 		ax.set_yticks(ticks=yticks, labels=yticks_labels)
+		ax.set_ylim(fst_param_norm.min() * 10, fst_param_norm.max() * 2)
 
 		for i in range(0, len(argv)):
-
-			y_max = int(self.df[argv[i]].max())
-			if i != (len(argv) - 1):
-				handles.append(ax.plot(self.df[x], self.df[argv[i]] / y_max,
-						   color=colors[(i + 1) % len(colors)], label=argv[i])[0])
-			else:
-				ax2 = ax.twinx()
-				y_min = int(self.df[argv[i]].min())
-				y_steps = int((y_max - y_min) / 5)
-				yticks = [i / y_max for i in range(y_min, y_max, y_steps)]
-				yticks_labels = [str(i) for i in range(y_min, y_max, y_steps)]
-				handles.append(ax2.plot(self.df[x], self.df[argv[i]] / y_max,
-							color=colors[(i + 1) % len(colors)], label=argv[i])[0])
-				ax2.set_yticks(ticks=yticks, labels=yticks_labels)
+			handles = self.__plot_extra_params(ax, x, argv[i], focused_param, colors, handles, i)
 		
 
-		fig.legend(handles=handles, bbox_to_anchor=(0.90, len(handles) * 0.1), ncol=1, frameon=False)
+		fig.legend(handles=handles, bbox_to_anchor=(0.85, len(handles) * 0.09), ncol=1, frameon=False)
 
 		if filename is not None:
 			fig.savefig(filename)
 		plt.show()
 
-	def open_google_maps(self, name=None, parameter=None, cmap="magma", zoom_start=15, map_type="s", color="blue"):
+	def open_google_maps(self, name=None, parameter=None, cmap="viridis", zoom_start=15, map_type="s", color="blue"):
 
 		track_points = [(self.df['lat'][i], self.df['lon'][i]) for i in range(len(self.df))]
 		x_diff = (self.df['lat'].max() - self.df['lat'].min()) / 2
