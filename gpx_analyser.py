@@ -224,7 +224,7 @@ class gpxAnalyserClass:
 	def plot_parameters(self, *argv, x='dist', fst_param='ele', focused_param=None, filename=None, cmap='gist_rainbow'):
 
 		if len(argv) == 0:
-			raise Exception("Insert at least two parameters to plot.")
+			raise Exception("Insert at least a parameter to plot.")
 
 		if focused_param is None:
 			focused_param = argv[-1]
