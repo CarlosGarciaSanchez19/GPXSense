@@ -7,11 +7,12 @@ import webbrowser
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import tensorflow as tf
 import random as rnd
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 
-class gpxAnalyserClass:
+class gpxAnalyseClass:
 
 	units: dict = {
 		'lat': None,
@@ -306,3 +307,99 @@ class gpxAnalyserClass:
 		else:
 			m.save(self.gpx_filename + ".html")
 			webbrowser.open(self.gpx_filename + ".html")
+
+
+class LinearPredictor(gpxAnalyseClass):
+
+	def __init__(self, gpx_filename, parameter='hr'):
+		gpxAnalyseClass.__init__(self, gpx_filename)
+		self.parameter = parameter
+
+	def __from_df_to_ds(self, data_df, label_df, shuffle=True, batch_size=32):
+		ds = tf.data.Dataset.from_tensor_slices((dict(data_df), label_df))
+		if shuffle:
+			ds = ds.shuffle(1000)
+		ds = ds.batch(batch_size)
+		return ds
+
+	def __define_train_and_val(self, train_size=0.8, df_norm=None):
+		if df_norm is None:
+			df = self.df_norm.copy()
+		else:
+			df = df_norm.copy()
+		df = df.drop(['lat', 'lon'], axis=1)
+		df_train = df.iloc[:int(len(df) * train_size)]
+		df_val = df.iloc[int(len(df) * train_size):]
+		y_train = df_train.pop(self.parameter)
+		y_val = df_val.pop(self.parameter)
+		return df_train, y_train, df_val, y_val
+
+	def __create_model(self, initial_lr=0.01, df_norm=None):
+		df_train = self.__define_train_and_val(df_norm=df_norm)[0]
+		inputs = {key: tf.keras.layers.Input(shape=(1,), name=key) for key in df_train.keys()}
+		x = tf.keras.layers.Concatenate()(list(inputs.values()))
+		output = tf.keras.layers.Dense(1)(x)
+		model = tf.keras.Model(inputs=inputs, outputs=output)
+		optimizer = tf.keras.optimizers.Adam(learning_rate=initial_lr)
+		model.compile(optimizer=optimizer, loss='mse', metrics=['mae'])
+		
+		return model
+	
+	def train_model(self, verbose=0, df_norm=None, initial_lr=0.01, batch_size=32, patience_lr_change=50, patience_early_stop=100, epochs=200):
+		model = self.__create_model(initial_lr=initial_lr, df_norm=df_norm)
+		df_train, y_train, df_val, y_val = self.__define_train_and_val(df_norm=df_norm)
+		ds_train = self.__from_df_to_ds(df_train, y_train, batch_size=batch_size)
+		ds_val = self.__from_df_to_ds(df_val, y_val, shuffle=False, batch_size=batch_size)
+		callbacks = [
+			tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=patience_lr_change, min_lr=1e-6),
+			tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=patience_early_stop, restore_best_weights=True)
+		]
+		model_history = model.fit(ds_train, validation_data=ds_val, verbose=verbose, epochs=epochs, callbacks=callbacks)
+		return model, model_history
+	
+	def plot_performance(self, model_history, filename=None):
+		fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+		ax[0].plot(model_history.history['loss'], label='loss', color='b')
+		ax[0].plot(model_history.history['val_loss'], label='val_loss', color='r')
+		ax[0].set_title('Loss and Validation Loss curves')
+		ax[0].set_xlabel('Epochs')
+		ax[0].set_ylabel('Loss')
+		ax[0].legend()
+
+		ax[1].plot(model_history.history['mae'], label='mae', color='b')
+		ax[1].plot(model_history.history['val_mae'], label='val_mae', color='r')
+		ax[1].set_title('Mean Absolute Error and Validation MAE curves')
+		ax[1].set_xlabel('Epochs')
+		ax[1].set_ylabel('MAE')
+		ax[1].legend()
+
+		if filename is not None:
+			fig.savefig(filename)
+		plt.show()
+	
+	def back_to_original(self, df, mean, std):
+		return df * std + mean
+
+	def predictions(self, model, df_test_norm):
+		df_test = df_test_norm.drop(['lat', 'lon'], axis=1)
+		y_test = df_test.pop(self.parameter)
+		ds_test = self.__from_df_to_ds(df_test, y_test, shuffle=False)
+		predictions = model.predict(ds_test)
+		return self.back_to_original(predictions, self.df[self.parameter].mean(), self.df[self.parameter].std())
+	
+	def plot_predictions(self, model, df_test_norm, df_test, x='dist', filename=None):
+		predictions = self.predictions(model, df_test_norm)
+		y_test = df_test[self.parameter]
+		x_values = df_test[x]
+
+		fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+		ax.scatter(x_values, y_test, s=5, color='b', label='Real values')
+		ax.plot(x_values, predictions, color='r', label='Predictions')
+		ax.set_title(f'Real values vs Predictions for {self.names[self.parameter]}')
+		ax.set_xlabel(f'{self.names[x]} [{self.units[x]}]')
+		ax.set_ylabel(f'{self.names[self.parameter]} [{self.units[self.parameter]}]')
+		ax.legend()
+
+		if filename is not None:
+			fig.savefig(filename)
+		plt.show()
