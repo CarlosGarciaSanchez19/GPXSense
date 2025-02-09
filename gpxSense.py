@@ -44,6 +44,7 @@ class gpxAnalyseClass:
 		self.gpx_filename = gpx_filename.split('.')[0]
 		self.df = self.gpx_to_df(gpx_object)
 		self.df['cad'] = self.df['cad'] + 100
+		self.df['ele'] = self.df['ele'] - self.df['ele'].min()
 		self.df['dist'] = self.get_distances()
 		self.df['time_acc'] = self.get_times()
 		self.df['pace'] = self.get_speeds()
@@ -95,7 +96,10 @@ class gpxAnalyseClass:
 	def get_speed(self, lat1, lon1, lat2, lon2, time1, time2):
 		distance = self.get_distance(lat1, lon1, lat2, lon2) / 1000
 		time = (time2 - time1).total_seconds() / 60
-		return time / distance
+		if distance == 0:
+			return 20.0
+		else:
+			return time / distance
 
 	def get_distances(self):
 		distances = [0.0]
@@ -316,9 +320,9 @@ class LinearPredictor(gpxAnalyseClass):
 		self.parameter = parameter
 
 	def __from_df_to_ds(self, data_df, label_df, shuffle=True, batch_size=32):
-		ds = tf.data.Dataset.from_tensor_slices((dict(data_df), label_df))
+		ds = tf.data.Dataset.from_tensor_slices((data_df.values, label_df.values))
 		if shuffle:
-			ds = ds.shuffle(1000)
+			ds = ds.shuffle(buffer_size=len(data_df))
 		ds = ds.batch(batch_size)
 		return ds
 
@@ -336,9 +340,9 @@ class LinearPredictor(gpxAnalyseClass):
 
 	def __create_model(self, initial_lr=0.01, df_norm=None):
 		df_train = self.__define_train_and_val(df_norm=df_norm)[0]
-		inputs = {key: tf.keras.layers.Input(shape=(1,), name=key) for key in df_train.keys()}
-		x = tf.keras.layers.Concatenate()(list(inputs.values()))
-		output = tf.keras.layers.Dense(1)(x)
+		num_features = len(df_train.columns)
+		inputs = tf.keras.layers.Input(shape=(num_features,))
+		output = tf.keras.layers.Dense(1)(inputs)
 		model = tf.keras.Model(inputs=inputs, outputs=output)
 		optimizer = tf.keras.optimizers.Adam(learning_rate=initial_lr)
 		model.compile(optimizer=optimizer, loss='mse', metrics=['mae'])
